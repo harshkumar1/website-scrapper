@@ -10,15 +10,23 @@ from typing import Any
 class Page:
     """A single scraped page and the data extracted from it."""
 
-    canonical_url: str
-    status_code: int
-    uuid: str = ""
+    doc_id: str = ""
     base_url: str = ""
-    last_updated_on: str = ""
+    canonical_url: str = ""
+    crawl_dt: str = ""
+    doc_last_modified_dt: str = ""
+    content_type: str = ""
+    content_source_type: str = "web"
+    scheme_type: str = ""
+    scheme_name: str = ""
+    lang: str = "en"
+    doc_version: int = 1
+    is_active: bool = True
+    status: int = 0
+    crawl_depth: int = 0
+    normalized_url: str = ""
     content: str = ""
     links: list[str] = field(default_factory=list)
-    depth: int = 0
-    content_type: str = ""
     error: str = ""
 
     def to_dict(self) -> dict[str, Any]:

@@ -5,18 +5,15 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import datetime
 from urllib.parse import urlparse
 
 from . import __version__, output
 from .crawler import Crawler
 
 
-def _default_filename(url: str, fmt: str) -> str:
-    """Build a filename from the domain and current timestamp."""
-    host = urlparse(url).netloc.replace(":", "_") or "site"
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"{host}_{stamp}.{fmt}"
+def _default_basename(url: str) -> str:
+    """Build a base filename from the domain."""
+    return urlparse(url).netloc.replace(":", "_") or "site"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,8 +26,8 @@ def build_parser() -> argparse.ArgumentParser:
         "-o",
         "--output",
         metavar="FILE",
-        help="Output filename (default: auto from domain+timestamp). "
-        "Bare names go inside the output dir; paths are kept as-is.",
+        help="Base output name (without extension). CSV, JSON, and metadata "
+        "files are derived from this. Bare names go inside the output dir.",
     )
     parser.add_argument(
         "--output-dir",
@@ -39,17 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Directory to write output into (default: {output.DEFAULT_OUTPUT_DIR}/)",
     )
     parser.add_argument(
-        "-f",
-        "--format",
-        choices=["json", "csv"],
-        default="json",
-        help="Output format (default: json)",
-    )
-    parser.add_argument(
         "-p", "--max-pages", type=int, default=50, help="Max pages to crawl (default: 50)"
-    )
-    parser.add_argument(
-        "-d", "--max-depth", type=int, default=3, help="Max link depth (default: 3)"
     )
     parser.add_argument(
         "--delay",
@@ -91,16 +78,40 @@ def main(argv: list[str] | None = None) -> int:
         stream=sys.stderr,
     )
 
+    basename = args.output or _default_basename(args.url)
+
+    csv_path = output.resolve_path(basename, "csv", args.output_dir)
+    json_path = output.resolve_path(basename, "json", args.output_dir)
+    meta_path = output.resolve_path(f"{basename}_metadata", "json", args.output_dir)
+
+    existing_meta = output.load_metadata(meta_path)
+    already_visited = set(existing_meta.keys())
+
+    frontier: list[tuple[str, int]] = []
+    if already_visited:
+        for entry in existing_meta.values():
+            parent_depth = int(entry.get("crawl_depth", 0))
+            for link in entry.get("links", []):
+                if link not in already_visited:
+                    frontier.append((link, parent_depth + 1))
+        logging.info(
+            "Resuming crawl — %d URLs already scraped, %d new URLs in frontier",
+            len(already_visited),
+            len(frontier),
+        )
+
     try:
         crawler = Crawler(
             args.url,
             max_pages=args.max_pages,
-            max_depth=args.max_depth,
+            max_depth=999,
             delay=args.delay,
             timeout=args.timeout,
             user_agent=args.user_agent,
             respect_robots=not args.ignore_robots,
             same_domain_only=not args.allow_external,
+            already_visited=already_visited,
+            frontier=frontier,
         )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -108,11 +119,13 @@ def main(argv: list[str] | None = None) -> int:
 
     pages = crawler.crawl()
 
-    filename = args.output or _default_filename(args.url, args.format)
-    path = output.resolve_path(filename, args.format, args.output_dir)
-    output.write(pages, args.format, path)
+    new, updated, skipped = output.write_incremental(pages, csv_path, json_path, meta_path)
 
-    logging.info("Done. Scraped %d page(s) -> %s", len(pages), path)
+    logging.info(
+        "Done. Crawled %d page(s): %d new, %d updated, %d skipped (unchanged). "
+        "Files: %s, %s, %s",
+        len(pages), new, updated, skipped, csv_path, json_path, meta_path,
+    )
     return 0
 
 

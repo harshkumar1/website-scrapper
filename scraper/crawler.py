@@ -7,7 +7,7 @@ import time
 import uuid as uuidlib
 from collections import deque
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urldefrag
 from urllib.robotparser import RobotFileParser
 
 import requests
@@ -16,6 +16,14 @@ from .models import Page
 from .parser import parse_html
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_url(url: str) -> str:
+    """Normalize a URL by removing fragments, trailing slashes, and lowercasing the scheme/host."""
+    url, _ = urldefrag(url)
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/") or "/"
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{path}"
 
 
 class Crawler:
@@ -37,6 +45,8 @@ class Crawler:
         user_agent: str = "website-scrapper/0.1 (+https://github.com/)",
         respect_robots: bool = True,
         same_domain_only: bool = True,
+        already_visited: set[str] | None = None,
+        frontier: list[tuple[str, int]] | None = None,
     ) -> None:
         self.start_url = start_url
         self.max_pages = max_pages
@@ -51,11 +61,14 @@ class Crawler:
             raise ValueError(f"Invalid start URL: {start_url!r}")
         self.domain = parsed.netloc
         self.base_url = f"{parsed.scheme}://{parsed.netloc}"
+        self.scheme_type = parsed.scheme.upper()
 
         self.session = requests.Session()
         self.session.headers["User-Agent"] = user_agent
 
         self._robots = self._load_robots(parsed) if respect_robots else None
+        self._already_visited = already_visited or set()
+        self._frontier = frontier or []
 
     def _load_robots(self, parsed) -> RobotFileParser | None:
         robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
@@ -65,7 +78,7 @@ class Crawler:
             rp.read()
             logger.debug("Loaded robots.txt from %s", robots_url)
             return rp
-        except Exception as exc:  # network/parse errors -> allow everything
+        except Exception as exc:
             logger.warning("Could not read robots.txt (%s); proceeding", exc)
             return None
 
@@ -82,8 +95,12 @@ class Crawler:
     def crawl(self) -> list[Page]:
         """Run the crawl and return the list of scraped pages."""
         pages: list[Page] = []
-        visited: set[str] = set()
-        queue: deque[tuple[str, int]] = deque([(self.start_url, 0)])
+        visited: set[str] = set(self._already_visited)
+        queue: deque[tuple[str, int]] = deque()
+        queue.append((self.start_url, 0))
+        for frontier_url, frontier_depth in self._frontier:
+            if frontier_url not in visited and self._in_scope(frontier_url):
+                queue.append((frontier_url, frontier_depth))
 
         while queue and len(pages) < self.max_pages:
             url, depth = queue.popleft()
@@ -110,14 +127,17 @@ class Crawler:
         return pages
 
     def _fetch(self, url: str, depth: int) -> Page:
-        crawled_at = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         page = Page(
-            canonical_url=url,
-            status_code=0,
-            uuid=str(uuidlib.uuid4()),
+            doc_id=str(uuidlib.uuid4()),
             base_url=self.base_url,
-            last_updated_on=crawled_at,
-            depth=depth,
+            canonical_url=url,
+            crawl_dt=now,
+            doc_last_modified_dt=now,
+            crawl_depth=depth,
+            scheme_type=self.scheme_type,
+            scheme_name=self.domain,
+            normalized_url=_normalize_url(url),
         )
 
         try:
@@ -126,12 +146,21 @@ class Crawler:
             page.error = str(exc)
             return page
 
-        page.status_code = resp.status_code
+        page.status = resp.status_code
         page.content_type = resp.headers.get("Content-Type", "")
-        # The canonical URL is the actual fetched URL (after redirects).
         page.canonical_url = resp.url
+        page.normalized_url = _normalize_url(resp.url)
+
+        last_modified = resp.headers.get("Last-Modified", "")
+        if last_modified:
+            page.doc_last_modified_dt = last_modified
+
+        content_lang = resp.headers.get("Content-Language", "")
+        if content_lang:
+            page.lang = content_lang.split(",")[0].strip()
 
         if resp.status_code != 200 or "html" not in page.content_type.lower():
+            page.is_active = False
             return page
 
         text, links = parse_html(resp.text, resp.url)
