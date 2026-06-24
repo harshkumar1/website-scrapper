@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import logging
+import tempfile
 import time
 import uuid as uuidlib
 from collections import deque
@@ -10,6 +12,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse, urldefrag
 from urllib.robotparser import RobotFileParser
 
+import pdfplumber
 import requests
 
 from .models import Page
@@ -159,11 +162,34 @@ class Crawler:
         if content_lang:
             page.lang = content_lang.split(",")[0].strip()
 
-        if resp.status_code != 200 or "html" not in page.content_type.lower():
+        if resp.status_code != 200:
             page.is_active = False
             return page
 
-        text, links = parse_html(resp.text, resp.url)
-        page.content = text
-        page.links = links
+        ct = page.content_type.lower()
+
+        if "html" in ct:
+            text, links = parse_html(resp.text, resp.url)
+            page.content = text
+            page.links = links
+        elif "pdf" in ct or url.lower().endswith(".pdf"):
+            page.content = self._extract_pdf_text(resp.content)
+            page.content_source_type = "pdf"
+        else:
+            page.is_active = False
+
         return page
+
+    @staticmethod
+    def _extract_pdf_text(data: bytes) -> str:
+        try:
+            with pdfplumber.open(io.BytesIO(data)) as pdf:
+                parts = []
+                for pg in pdf.pages:
+                    text = pg.extract_text()
+                    if text:
+                        parts.append(text)
+                return " ".join(" ".join(parts).split())
+        except Exception as exc:
+            logger.warning("Failed to extract PDF text: %s", exc)
+            return ""
