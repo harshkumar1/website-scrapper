@@ -29,5 +29,11 @@ class Page:
     links: list[str] = field(default_factory=list)
     error: str = ""
 
+    def has_extractable_content(self) -> bool:
+        """True when the crawl produced usable text content."""
+        if self.error or self.status != 200:
+            return False
+        return bool(self.content.strip())
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

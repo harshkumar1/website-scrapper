@@ -26,8 +26,8 @@ def build_parser() -> argparse.ArgumentParser:
         "-o",
         "--output",
         metavar="FILE",
-        help="Base output name (without extension). CSV, JSON, and metadata "
-        "files are derived from this. Bare names go inside the output dir.",
+        help="Base output name (without extension). JSON and markdown "
+        "files are derived from this. Bare names go inside the data dir.",
     )
     parser.add_argument(
         "--output-dir",
@@ -80,16 +80,23 @@ def main(argv: list[str] | None = None) -> int:
 
     basename = args.output or _default_basename(args.url)
 
-    csv_path = output.resolve_path(basename, "csv", args.output_dir)
     json_path = output.resolve_path(basename, "json", args.output_dir)
-    meta_path = output.resolve_path(f"{basename}_metadata", "json", args.output_dir)
+    raw_data_path = output.resolve_path(output.RAW_DATA_FILENAME, "csv", args.output_dir)
+    links_path = output.resolve_path(f"{output.RAW_DATA_FILENAME}_links", "json", args.output_dir)
+    unparseable_path = output.resolve_path(f"{basename}_unparseable", "json", args.output_dir)
+    legacy_metadata_path = output.resolve_path(f"{basename}_metadata", "json", args.output_dir)
 
-    existing_meta = output.load_metadata(meta_path)
-    already_visited = set(existing_meta.keys())
+    existing_state = output.load_crawl_state(
+        raw_data_path,
+        json_path,
+        links_path,
+        legacy_metadata_path=legacy_metadata_path,
+    )
+    already_visited = set(existing_state.keys())
 
     frontier: list[tuple[str, int]] = []
     if already_visited:
-        for entry in existing_meta.values():
+        for entry in existing_state.values():
             parent_depth = int(entry.get("crawl_depth", 0))
             for link in entry.get("links", []):
                 if link not in already_visited:
@@ -119,12 +126,26 @@ def main(argv: list[str] | None = None) -> int:
 
     pages = crawler.crawl()
 
-    new, updated, skipped = output.write_incremental(pages, csv_path, json_path, meta_path)
+    new, updated, skipped = output.write_incremental(
+        pages,
+        json_path,
+        raw_data_path,
+        links_path,
+        unparseable_path,
+        legacy_metadata_path=legacy_metadata_path,
+    )
 
     logging.info(
         "Done. Crawled %d page(s): %d new, %d updated, %d skipped (unchanged). "
-        "Files: %s, %s, %s",
-        len(pages), new, updated, skipped, csv_path, json_path, meta_path,
+        "Index: %s, raw data: %s, unparseable: %s, markdown: %s/",
+        len(pages),
+        new,
+        updated,
+        skipped,
+        json_path,
+        raw_data_path,
+        unparseable_path,
+        output.markdown_dir(raw_data_path),
     )
     return 0
 

@@ -43,6 +43,8 @@ website-scrapper https://example.com -o results
 
 # Second run — resumes from where the first left off, skips unchanged pages
 website-scrapper https://example.com -o results
+
+website-scrapper https://example.com -o results -p 200
 ```
 
 You can also run it as a module: `python -m scraper https://example.com`.
@@ -54,6 +56,7 @@ You can also run it as a module: `python -m scraper https://example.com`.
 | `-o, --output` | Base output name (extensions added automatically) | auto from domain |
 | `--output-dir` | Folder to write into | `output/` |
 | `-p, --max-pages` | Max pages to crawl per run | `50` |
+| `-d, --max-depth` | Max link depth from the seed | `3` |
 | `--delay` | Seconds between requests | `0.5` |
 | `--timeout` | Per-request timeout (seconds) | `10` |
 | `--user-agent` | User-Agent header | package default |
